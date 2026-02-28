@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Nexus Export Pro",
     "author": "Developer",
-    "version": (1, 2, 1),
+    "version": (1, 2, 2),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Nexus Export",
     "description": "Batch export with platform presets, mesh cleanup, Draco compression, and texture optimization",
@@ -1443,6 +1443,15 @@ def _version_tuple(tag: str):
     return tuple(int(p) for p in parts[:3])
 
 
+def _redraw_panels():
+    """Force redraw of all 3D viewport panels (safe to call from timer)."""
+    for window in bpy.context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+    return None  # Don't repeat
+
+
 def _check_github_release():
     """Background thread target: fetch the latest release from GitHub."""
     global _update_state
@@ -1475,6 +1484,8 @@ def _check_github_release():
     finally:
         _update_state["checking"] = False
         _update_state["checked"] = True
+        # Schedule a panel redraw from the main thread
+        bpy.app.timers.register(_redraw_panels, first_interval=0.1)
 
 
 def _auto_check_update():
@@ -1567,6 +1578,11 @@ class NEXUS_OT_install_update(Operator):
 
             _update_state["update_available"] = False
             _update_state["update_installed"] = True
+
+            # Force panel redraw to show restart button
+            for area in context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
 
         except Exception as e:
             self.report({'ERROR'}, f"Update failed: {e}")
