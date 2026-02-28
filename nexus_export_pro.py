@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Nexus Export Pro",
     "author": "Developer",
-    "version": (1, 2, 2),
+    "version": (1, 2, 3),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Nexus Export",
     "description": "Batch export with platform presets, mesh cleanup, Draco compression, and texture optimization",
@@ -1651,6 +1651,10 @@ class NEXUS_PT_main_panel(Panel):
                 text=f"Update to {_update_state['latest_version']}",
                 icon='IMPORT',
             )
+        elif _update_state["checked"]:
+            layout.label(text="You are up to date", icon='CHECKMARK')
+            row = layout.row(align=True)
+            row.operator("nexus.check_update", text="Check for Updates", icon='URL')
         else:
             row = layout.row(align=True)
             row.operator("nexus.check_update", text="Check for Updates", icon='URL')
