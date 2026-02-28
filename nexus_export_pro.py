@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Nexus Export Pro",
     "author": "Developer",
-    "version": (1, 1, 1),
+    "version": (1, 2, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Nexus Export",
     "description": "Batch export with platform presets, mesh cleanup, Draco compression, and texture optimization",
@@ -344,7 +344,22 @@ class NexusExportSettings(PropertyGroup):
     apply_transforms: BoolProperty(
         name="Apply Transforms",
         default=False,
-        description="Apply location, rotation, and scale before export (bakes transforms into mesh data)"
+        description="Apply transforms before export (bakes into mesh data)"
+    )
+    apply_location: BoolProperty(
+        name="Location",
+        default=True,
+        description="Apply location (sets origin to world center)"
+    )
+    apply_rotation: BoolProperty(
+        name="Rotation",
+        default=True,
+        description="Apply rotation (bakes rotation into mesh)"
+    )
+    apply_scale: BoolProperty(
+        name="Scale",
+        default=True,
+        description="Apply scale (bakes scale into mesh)"
     )
 
     # Output
@@ -606,6 +621,30 @@ class NEXUS_OT_toggle_all(Operator):
         return {'FINISHED'}
 
 
+class NEXUS_OT_open_output_folder(Operator):
+    """Open the export output folder in the file browser"""
+    bl_idname = "nexus.open_output_folder"
+    bl_label = "Open Output Folder"
+
+    def execute(self, context):
+        settings = context.scene.nexus_export
+        output_dir = bpy.path.abspath(settings.output_directory)
+        if not output_dir or not os.path.isdir(output_dir):
+            self.report({'ERROR'}, "Output directory not set or doesn't exist")
+            return {'CANCELLED'}
+
+        import subprocess
+        import sys
+        if sys.platform == 'win32':
+            os.startfile(output_dir)
+        elif sys.platform == 'darwin':
+            subprocess.Popen(['open', output_dir])
+        else:
+            subprocess.Popen(['xdg-open', output_dir])
+
+        return {'FINISHED'}
+
+
 class NEXUS_OT_add_all_scene(Operator):
     """Add all mesh objects in the scene to the export queue"""
     bl_idname = "nexus.add_all_scene"
@@ -663,6 +702,7 @@ class NEXUS_OT_export_selected(Operator):
     bl_options = {'REGISTER'}
 
     def execute(self, context):
+        global _export_override_objects
         selected = [obj for obj in context.selected_objects
                     if obj.type == 'MESH' or
                     (obj.type == 'EMPTY' and any(c.type == 'MESH' for c in obj.children_recursive))]
@@ -671,36 +711,13 @@ class NEXUS_OT_export_selected(Operator):
             self.report({'ERROR'}, "No mesh objects selected")
             return {'CANCELLED'}
 
-        queue = context.scene.nexus_queue
+        # Set override so process_export uses these objects instead of the queue
+        _export_override_objects = selected
+        return bpy.ops.nexus.process_export()
 
-        # Remember original queue state
-        original_items = [(item.obj, item.include) for item in queue]
 
-        # Clear and populate queue with selected objects
-        queue.clear()
-        for obj in selected:
-            item = queue.add()
-            item.obj = obj
-            item.include = True
-
-        # Run the export
-        result = bpy.ops.nexus.process_export()
-
-        # Restore original queue
-        queue.clear()
-        for obj, include in original_items:
-            item = queue.add()
-            item.obj = obj
-            item.include = include
-        context.scene.nexus_queue_index = min(
-            context.scene.nexus_queue_index, max(0, len(queue) - 1)
-        )
-
-        if result == {'CANCELLED'}:
-            return {'CANCELLED'}
-
-        return {'FINISHED'}
-
+# Override list: when set, process_export uses these objects instead of the queue
+_export_override_objects = None
 
 # Global storage for export report data
 _export_report_data = {
@@ -1029,9 +1046,8 @@ class NEXUS_OT_process_export(Operator):
             tree.nodes.remove(entry['emit_node'])
 
     def execute(self, context):
-        global _export_report_data
+        global _export_report_data, _export_override_objects
         settings = context.scene.nexus_export
-        queue = context.scene.nexus_queue
 
         # Reset export report
         _export_report_data = {
@@ -1051,8 +1067,15 @@ class NEXUS_OT_process_export(Operator):
             self.report({'ERROR'}, "Please select at least one export format")
             return {'CANCELLED'}
 
-        included_items = [item for item in queue if item.include and item.obj]
-        if not included_items:
+        # Use override objects if set (from Export Selected), otherwise use queue
+        if _export_override_objects is not None:
+            export_objects = list(_export_override_objects)
+            _export_override_objects = None
+        else:
+            queue = context.scene.nexus_queue
+            export_objects = [item.obj for item in queue if item.include and item.obj]
+
+        if not export_objects:
             self.report({'ERROR'}, "No objects selected for export")
             return {'CANCELLED'}
 
@@ -1062,12 +1085,11 @@ class NEXUS_OT_process_export(Operator):
 
         success_count = 0
         error_count = 0
-        total_items = len(included_items)
+        total_items = len(export_objects)
 
         context.window_manager.progress_begin(0, total_items)
 
-        for item_index, item in enumerate(included_items):
-            obj = item.obj
+        for item_index, obj in enumerate(export_objects):
 
             # Update progress bar and status
             context.window_manager.progress_update(item_index)
@@ -1095,7 +1117,11 @@ class NEXUS_OT_process_export(Operator):
                         'rotation': t_obj.rotation_euler.copy(),
                         'scale': t_obj.scale.copy(),
                     }
-                bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+                bpy.ops.object.transform_apply(
+                    location=settings.apply_location,
+                    rotation=settings.apply_rotation,
+                    scale=settings.apply_scale,
+                )
 
             # Store original mesh data for cleanup restoration (for all mesh objects)
             original_mesh_data = {}
@@ -1977,6 +2003,11 @@ class NEXUS_PT_output(Panel):
             row = col.row(align=True)
             row.prop(settings, "export_axis_forward", text="Forward")
         col.prop(settings, "apply_transforms")
+        if settings.apply_transforms:
+            row = col.row(align=True)
+            row.prop(settings, "apply_location", toggle=True)
+            row.prop(settings, "apply_rotation", toggle=True)
+            row.prop(settings, "apply_scale", toggle=True)
 
         col.separator()
         col.prop(settings, "show_export_report")
@@ -1990,6 +2021,11 @@ class NEXUS_PT_output(Panel):
         row = layout.row()
         row.scale_y = 1.5
         row.operator("nexus.export_selected", icon='RESTRICT_SELECT_OFF')
+
+        # Open output folder button
+        if settings.output_directory:
+            row = layout.row()
+            row.operator("nexus.open_output_folder", icon='FILEBROWSER')
 
         # Show report buttons if there's report data
         if _export_report_data['items']:
@@ -2013,6 +2049,7 @@ classes = (
     NEXUS_OT_toggle_all,
     NEXUS_OT_add_all_scene,
     NEXUS_OT_export_selected,
+    NEXUS_OT_open_output_folder,
     NEXUS_OT_show_report,
     NEXUS_OT_copy_report,
     NEXUS_OT_process_export,
