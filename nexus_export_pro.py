@@ -1440,7 +1440,7 @@ class NEXUS_OT_install_update(Operator):
 
 class NEXUS_PT_main_panel(Panel):
     """Main panel for Nexus Export Pro"""
-    bl_label = "Nexus Export Pro"
+    bl_label = "Nexus Export Pro v" + ".".join(str(v) for v in bl_info["version"])
     bl_idname = "NEXUS_PT_main_panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -1455,23 +1455,21 @@ class NEXUS_PT_main_panel(Panel):
             if not _update_state["checked"] and not _update_state["checking"]:
                 bpy.ops.nexus.check_update()
 
-        # Version header with update indicator
-        version_str = ".".join(str(v) for v in bl_info["version"])
-        row = layout.row(align=True)
-        row.label(text=f"v{version_str}", icon='EXPORT')
-
+        # Update indicator row
         if _update_state["checking"]:
-            row.label(text="Checking...", icon='SORTTIME')
+            row = layout.row(align=True)
+            row.label(text="Checking for updates...", icon='SORTTIME')
         elif _update_state["update_available"]:
-            sub = row.row(align=True)
-            sub.alert = True
-            sub.operator(
+            row = layout.row(align=True)
+            row.alert = True
+            row.operator(
                 "nexus.install_update",
                 text=f"Update to {_update_state['latest_version']}",
                 icon='IMPORT',
             )
         else:
-            row.operator("nexus.check_update", text="", icon='URL')
+            row = layout.row(align=True)
+            row.operator("nexus.check_update", text="Check for Updates", icon='URL')
 
 
 class NEXUS_PT_object_queue(Panel):
