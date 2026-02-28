@@ -1450,6 +1450,13 @@ def _check_github_release():
         _update_state["checked"] = True
 
 
+def _auto_check_update():
+    """Timer callback: kicks off the background update check."""
+    thread = threading.Thread(target=_check_github_release, daemon=True)
+    thread.start()
+    return None  # Don't repeat the timer
+
+
 class NexusExportPreferences(AddonPreferences):
     """Addon preferences for Nexus Export Pro (stores persistent settings)."""
     bl_idname = __name__
@@ -1563,11 +1570,12 @@ class NEXUS_PT_main_panel(Panel):
     def draw(self, context):
         layout = self.layout
 
-        # Trigger auto-check on first panel draw
-        prefs = context.preferences.addons.get(__name__)
-        if prefs and prefs.preferences.auto_check_updates:
-            if not _update_state["checked"] and not _update_state["checking"]:
-                bpy.ops.nexus.check_update()
+        # Trigger auto-check on first panel draw (via timer, never from draw)
+        if not _update_state["checked"] and not _update_state["checking"]:
+            prefs = context.preferences.addons.get(__name__)
+            if prefs and prefs.preferences.auto_check_updates:
+                _update_state["checking"] = True
+                bpy.app.timers.register(_auto_check_update, first_interval=1.0)
 
         # Update indicator row
         if _update_state["checking"]:
