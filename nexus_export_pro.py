@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Nexus Export Pro",
     "author": "Developer",
-    "version": (1, 2, 0),
+    "version": (1, 2, 1),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Nexus Export",
     "description": "Batch export with platform presets, mesh cleanup, Draco compression, and texture optimization",
@@ -1429,6 +1429,7 @@ _update_state = {
     "checked": False,
     "checking": False,
     "update_available": False,
+    "update_installed": False,
     "latest_version": "",
     "download_url": "",
     "error": "",
@@ -1565,16 +1566,29 @@ class NEXUS_OT_install_update(Operator):
                 f.write(new_code)
 
             _update_state["update_available"] = False
-            _update_state["checked"] = False
-
-            self.report({'INFO'},
-                        f"Updated to {_update_state['latest_version']}! "
-                        "Please restart Blender to apply.")
+            _update_state["update_installed"] = True
 
         except Exception as e:
             self.report({'ERROR'}, f"Update failed: {e}")
             return {'CANCELLED'}
 
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(self, event)
+
+
+class NEXUS_OT_restart_blender(Operator):
+    """Save and restart Blender to apply the update"""
+    bl_idname = "nexus.restart_blender"
+    bl_label = "Restart Blender"
+    bl_description = "Save current file and restart Blender to apply the update"
+
+    def execute(self, context):
+        # Save if file has been saved before
+        if bpy.data.filepath:
+            bpy.ops.wm.save_mainfile()
+        bpy.ops.wm.quit_blender()
         return {'FINISHED'}
 
     def invoke(self, context, event):
@@ -1603,8 +1617,14 @@ class NEXUS_PT_main_panel(Panel):
                 _update_state["checking"] = True
                 bpy.app.timers.register(_auto_check_update, first_interval=1.0)
 
-        # Update indicator row
-        if _update_state["checking"]:
+        # Update status row
+        if _update_state["update_installed"]:
+            box = layout.box()
+            box.alert = True
+            col = box.column(align=True)
+            col.label(text=f"v{_update_state['latest_version']} installed!", icon='CHECKMARK')
+            col.operator("nexus.restart_blender", text="Restart Blender to Apply", icon='FILE_REFRESH')
+        elif _update_state["checking"]:
             row = layout.row(align=True)
             row.label(text="Checking for updates...", icon='SORTTIME')
         elif _update_state["update_available"]:
@@ -2055,6 +2075,7 @@ classes = (
     NEXUS_OT_process_export,
     NEXUS_OT_check_update,
     NEXUS_OT_install_update,
+    NEXUS_OT_restart_blender,
     NEXUS_PT_main_panel,
     NEXUS_PT_object_queue,
     NEXUS_PT_platform_preset,
