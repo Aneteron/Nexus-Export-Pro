@@ -32,8 +32,8 @@ from bpy.types import PropertyGroup, Operator, Panel, UIList, AddonPreferences
 # -----------------------------------------------------------------------------
 # GitHub Auto-Update Configuration
 # -----------------------------------------------------------------------------
-GITHUB_OWNER = "YOUR_USERNAME"  # TODO: Set your GitHub username before pushing
-GITHUB_REPO = "nexus-export-pro"
+GITHUB_OWNER = "Aneteron"
+GITHUB_REPO = "Nexus-Export-Pro"
 
 
 # -----------------------------------------------------------------------------
