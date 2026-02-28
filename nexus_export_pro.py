@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Nexus Export Pro",
     "author": "Developer",
-    "version": (1, 1, 0),
+    "version": (1, 1, 1),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Nexus Export",
     "description": "Batch export with platform presets, mesh cleanup, Draco compression, and texture optimization",
@@ -353,6 +353,16 @@ class NexusExportSettings(PropertyGroup):
         subtype='DIR_PATH',
         description="Directory to export files to"
     )
+    export_prefix: StringProperty(
+        name="Prefix",
+        default="",
+        description="Prefix added before each exported filename (e.g. 'MyProject_')"
+    )
+    export_suffix: StringProperty(
+        name="Suffix",
+        default="",
+        description="Suffix added after each exported filename (e.g. '_low')"
+    )
 
     # Mesh Cleanup Settings
     cleanup_mesh: BoolProperty(
@@ -592,6 +602,102 @@ class NEXUS_OT_toggle_all(Operator):
 
         state_text = "included" if new_state else "excluded"
         self.report({'INFO'}, f"All items {state_text}")
+
+        return {'FINISHED'}
+
+
+class NEXUS_OT_add_all_scene(Operator):
+    """Add all mesh objects in the scene to the export queue"""
+    bl_idname = "nexus.add_all_scene"
+    bl_label = "Add All in Scene"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def has_mesh_descendants(self, obj):
+        """Check if object has any visible mesh descendants."""
+        for child in obj.children:
+            if not is_object_visible(child):
+                continue
+            if child.type == 'MESH':
+                return True
+            if self.has_mesh_descendants(child):
+                return True
+        return False
+
+    def execute(self, context):
+        queue = context.scene.nexus_queue
+        existing_objects = {item.obj for item in queue if item.obj}
+
+        # Gather all top-level mesh objects and empties with mesh children
+        candidates = []
+        for obj in context.scene.objects:
+            if not is_object_visible(obj):
+                continue
+            if obj in existing_objects:
+                continue
+            if obj.parent is not None:
+                continue  # Only add top-level objects; children export with parents
+            if obj.type == 'MESH':
+                candidates.append(obj)
+            elif obj.type == 'EMPTY' and self.has_mesh_descendants(obj):
+                candidates.append(obj)
+
+        added_count = 0
+        for obj in candidates:
+            item = queue.add()
+            item.obj = obj
+            item.include = True
+            added_count += 1
+
+        if added_count > 0:
+            self.report({'INFO'}, f"Added {added_count} object(s) from scene")
+        else:
+            self.report({'WARNING'}, "No new objects to add")
+
+        return {'FINISHED'}
+
+
+class NEXUS_OT_export_selected(Operator):
+    """Quick export selected objects with current settings (bypasses queue)"""
+    bl_idname = "nexus.export_selected"
+    bl_label = "Export Selected"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        selected = [obj for obj in context.selected_objects
+                    if obj.type == 'MESH' or
+                    (obj.type == 'EMPTY' and any(c.type == 'MESH' for c in obj.children_recursive))]
+
+        if not selected:
+            self.report({'ERROR'}, "No mesh objects selected")
+            return {'CANCELLED'}
+
+        queue = context.scene.nexus_queue
+
+        # Remember original queue state
+        original_items = [(item.obj, item.include) for item in queue]
+
+        # Clear and populate queue with selected objects
+        queue.clear()
+        for obj in selected:
+            item = queue.add()
+            item.obj = obj
+            item.include = True
+
+        # Run the export
+        result = bpy.ops.nexus.process_export()
+
+        # Restore original queue
+        queue.clear()
+        for obj, include in original_items:
+            item = queue.add()
+            item.obj = obj
+            item.include = include
+        context.scene.nexus_queue_index = min(
+            context.scene.nexus_queue_index, max(0, len(queue) - 1)
+        )
+
+        if result == {'CANCELLED'}:
+            return {'CANCELLED'}
 
         return {'FINISHED'}
 
@@ -956,9 +1062,16 @@ class NEXUS_OT_process_export(Operator):
 
         success_count = 0
         error_count = 0
+        total_items = len(included_items)
 
-        for item in included_items:
+        context.window_manager.progress_begin(0, total_items)
+
+        for item_index, item in enumerate(included_items):
             obj = item.obj
+
+            # Update progress bar and status
+            context.window_manager.progress_update(item_index)
+            self.report({'INFO'}, f"Exporting {item_index + 1}/{total_items}: {obj.name}")
 
             # Get all visible descendants (children, grandchildren, etc.)
             descendants = get_all_descendants(obj, visible_only=True)
@@ -971,7 +1084,7 @@ class NEXUS_OT_process_export(Operator):
                 child.select_set(True)
             context.view_layer.objects.active = obj
 
-            base_name = obj.name
+            base_name = settings.export_prefix + obj.name + settings.export_suffix
 
             # Apply transforms if enabled (store originals for restoration)
             original_transforms = {}
@@ -1259,6 +1372,7 @@ class NEXUS_OT_process_export(Operator):
 
         # Update error count in report
         _export_report_data['errors'] = error_count
+        context.window_manager.progress_end()
 
         # Restore original selection
         bpy.ops.object.select_all(action='DESELECT')
@@ -1504,6 +1618,7 @@ class NEXUS_PT_object_queue(Panel):
 
         row = layout.row(align=True)
         row.operator("nexus.toggle_all", text="Toggle All")
+        row.operator("nexus.add_all_scene", text="Add All", icon='SCENE_DATA')
 
         queue = scene.nexus_queue
         included = sum(1 for item in queue if item.include and item.obj)
@@ -1842,6 +1957,10 @@ class NEXUS_PT_output(Panel):
         col = layout.column()
         col.prop(settings, "output_directory", text="Directory")
 
+        row = col.row(align=True)
+        row.prop(settings, "export_prefix", text="Prefix")
+        row.prop(settings, "export_suffix", text="Suffix")
+
         col.separator()
         col.prop(settings, "axis_preset")
         if settings.axis_preset == 'CUSTOM':
@@ -1859,6 +1978,10 @@ class NEXUS_PT_output(Panel):
         row = layout.row()
         row.scale_y = 2.0
         row.operator("nexus.process_export", icon='EXPORT')
+
+        row = layout.row()
+        row.scale_y = 1.5
+        row.operator("nexus.export_selected", icon='RESTRICT_SELECT_OFF')
 
         # Show report buttons if there's report data
         if _export_report_data['items']:
@@ -1880,6 +2003,8 @@ classes = (
     NEXUS_OT_remove_item,
     NEXUS_OT_clear_queue,
     NEXUS_OT_toggle_all,
+    NEXUS_OT_add_all_scene,
+    NEXUS_OT_export_selected,
     NEXUS_OT_show_report,
     NEXUS_OT_copy_report,
     NEXUS_OT_process_export,
