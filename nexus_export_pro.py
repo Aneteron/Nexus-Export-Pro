@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Nexus Export Pro",
     "author": "Developer",
-    "version": (1, 2, 3),
+    "version": (1, 3, 1),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Nexus Export",
     "description": "Batch export with platform presets, mesh cleanup, Draco compression, and texture optimization",
@@ -70,6 +70,7 @@ class NexusExportSettings(PropertyGroup):
                 'enable_draco': False, 'texture_compression': 'JPEG',
                 'max_texture_size': '2048', 'resize_textures': True,
                 'usdz_optimize_via_glb': True, 'usdz_texture_compression': 'JPEG',
+                'axis_preset': 'RCP',
             },
             'ANDROID_AR': {
                 'export_glb': True, 'export_usdz': False, 'export_fbx': False,
@@ -429,6 +430,23 @@ class NexusExportSettings(PropertyGroup):
         ],
         default='NEAREST',
         description="Method for determining power-of-two size"
+    )
+
+    # Animation Settings
+    export_animation: BoolProperty(
+        name="Export Animation",
+        default=True,
+        description="Export all frames in the render frame range (applies to all formats)"
+    )
+    export_armatures: BoolProperty(
+        name="Export Armatures",
+        default=True,
+        description="Export armatures as USD skeletons and skinned meshes"
+    )
+    export_shapekeys: BoolProperty(
+        name="Export Shape Keys",
+        default=True,
+        description="Export shape keys as USD blend shapes"
     )
 
     # Export Report Settings
@@ -835,6 +853,15 @@ class NEXUS_OT_copy_report(Operator):
             return f"{size_bytes / (1024 * 1024):.2f} MB"
 
 
+def _map_axis_to_usd_enum(axis_str):
+    """Map addon axis strings (e.g. '-Z', 'Y') to Blender USD export enum values."""
+    mapping = {
+        'X': 'X', 'Y': 'Y', 'Z': 'Z',
+        '-X': 'NEGATIVE_X', '-Y': 'NEGATIVE_Y', '-Z': 'NEGATIVE_Z',
+    }
+    return mapping.get(axis_str, 'Y')
+
+
 class NEXUS_OT_process_export(Operator):
     """Process and export all included objects"""
     bl_idname = "nexus.process_export"
@@ -1172,6 +1199,7 @@ class NEXUS_OT_process_export(Operator):
                         'use_selection': True,
                         'export_apply': True,
                         'export_yup': settings.export_axis_up == 'Y',
+                        'export_animations': settings.export_animation,
                     }
 
                     # Draco settings
@@ -1219,6 +1247,7 @@ class NEXUS_OT_process_export(Operator):
                             'use_selection': True,
                             'export_apply': True,
                             'export_yup': settings.export_axis_up == 'Y',
+                            'export_animations': settings.export_animation,
                         }
 
                         # Draco compression
@@ -1257,11 +1286,35 @@ class NEXUS_OT_process_export(Operator):
                             imp_obj.select_set(True)
                             context.view_layer.objects.active = imp_obj
 
+                        # Activate NLA strip actions for USD animation export.
+                        # GLB import puts most animations into NLA tracks only,
+                        # but Blender's USD exporter requires an active action.
+                        if settings.export_animation:
+                            for imp_obj in imported_objects:
+                                ad = imp_obj.animation_data
+                                if ad and not ad.action and ad.nla_tracks:
+                                    for track in ad.nla_tracks:
+                                        for strip in track.strips:
+                                            if strip.action:
+                                                ad.action = strip.action
+                                                break
+                                        if ad.action:
+                                            break
+
                         # Export USDZ from imported objects
-                        bpy.ops.wm.usd_export(
-                            filepath=filepath,
-                            selected_objects_only=True,
-                        )
+                        usd_kwargs = {
+                            'filepath': filepath,
+                            'selected_objects_only': True,
+                            'export_animation': settings.export_animation,
+                            'export_armatures': settings.export_armatures,
+                            'export_shapekeys': settings.export_shapekeys,
+                        }
+                        needs_convert = (settings.export_axis_up != 'Z' or settings.export_axis_forward != 'Y')
+                        if needs_convert:
+                            usd_kwargs['convert_orientation'] = True
+                            usd_kwargs['export_global_up_selection'] = _map_axis_to_usd_enum(settings.export_axis_up)
+                            usd_kwargs['export_global_forward_selection'] = _map_axis_to_usd_enum(settings.export_axis_forward)
+                        bpy.ops.wm.usd_export(**usd_kwargs)
 
                         # Cleanup: delete imported objects and their data
                         bpy.ops.object.delete()
@@ -1292,10 +1345,19 @@ class NEXUS_OT_process_export(Operator):
                 else:
                     # Direct USDZ export (no optimization)
                     try:
-                        bpy.ops.wm.usd_export(
-                            filepath=filepath,
-                            selected_objects_only=True,
-                        )
+                        usd_kwargs = {
+                            'filepath': filepath,
+                            'selected_objects_only': True,
+                            'export_animation': settings.export_animation,
+                            'export_armatures': settings.export_armatures,
+                            'export_shapekeys': settings.export_shapekeys,
+                        }
+                        needs_convert = (settings.export_axis_up != 'Z' or settings.export_axis_forward != 'Y')
+                        if needs_convert:
+                            usd_kwargs['convert_orientation'] = True
+                            usd_kwargs['export_global_up_selection'] = _map_axis_to_usd_enum(settings.export_axis_up)
+                            usd_kwargs['export_global_forward_selection'] = _map_axis_to_usd_enum(settings.export_axis_forward)
+                        bpy.ops.wm.usd_export(**usd_kwargs)
                         success_count += 1
                     except Exception as e:
                         self.report({'WARNING'}, f"USDZ export failed for {base_name}: {str(e)}")
@@ -1317,6 +1379,7 @@ class NEXUS_OT_process_export(Operator):
                         mesh_smooth_type=settings.fbx_mesh_smooth_type,
                         embed_textures=settings.fbx_embed_textures,
                         bake_space_transform=settings.fbx_apply_transform,
+                        bake_anim=settings.export_animation,
                     )
                     success_count += 1
                 except Exception as e:
@@ -2048,6 +2111,13 @@ class NEXUS_PT_output(Panel):
             row.prop(settings, "apply_location", toggle=True)
             row.prop(settings, "apply_rotation", toggle=True)
             row.prop(settings, "apply_scale", toggle=True)
+
+        col.separator()
+        col.prop(settings, "export_animation")
+        if settings.export_animation:
+            row = col.row(align=True)
+            row.prop(settings, "export_armatures", toggle=True)
+            row.prop(settings, "export_shapekeys", toggle=True)
 
         col.separator()
         col.prop(settings, "show_export_report")
